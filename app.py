@@ -6,22 +6,20 @@ import os
 import time
 
 st.set_page_config(page_title="Mugan's Big Bull Guardian", layout="wide")
-st.title("🛡️ Mugan's Legacy Guardian: Titan Edition (2026)")
+st.title("🛡️ Mugan's Legacy Guardian: Titan Edition")
 
-# --- 1. UDiFF DATA ENGINE ---
+# --- 1. ERROR-PROOF DATA FETCHING ---
 @st.cache_data(ttl=3600)
-def fetch_udiff_data():
+def fetch_any_nse_data():
     for i in range(1, 10): 
         try:
             target_date = date.today() - timedelta(days=i)
             if target_date.weekday() >= 5: continue
             
-            # Fetching the bhavcopy
             csv_path = bhavcopy_save(target_date, ".")
             df = pd.read_csv(csv_path)
-            
-            # Clean spaces from column names
-            df.columns = [str(c).strip() for c in df.columns]
+            # Standardize all headers: Remove spaces and make Uppercase
+            df.columns = [str(c).strip().upper() for c in df.columns]
             
             if os.path.exists(csv_path):
                 os.remove(csv_path)
@@ -30,61 +28,67 @@ def fetch_udiff_data():
             continue
     return None, None
 
-df_raw, data_date = fetch_udiff_data()
+df_raw, data_date = fetch_any_nse_data()
 
 if df_raw is not None:
-    st.success(f"✅ UDiFF Data Synced: {data_date.strftime('%d %b %Y')}")
+    # --- 2. FUZZY COLUMN MAPPING (The Fix) ---
+    cols = list(df_raw.columns)
     
-    # --- 2. 2026 COLUMN MAPPING ---
-    # Mapping the new 2026 UDiFF headers to our logic
-    mapping = {
-        'SYMBOL': 'TCKRSYMB',
-        'SERIES': 'SCTYSRS',
-        'CLOSE': 'CLSPRIC',
-        'PREV_CLOSE': 'PRVSCLSGPRIC',
-        'VOLUME': 'TTLTRADGVOL'
-    }
+    # We search for keywords instead of exact matches to avoid KeyErrors
+    def find_col(keywords):
+        for k in keywords:
+            for c in cols:
+                if k in c: return c
+        return None
 
-    # Filter for Equity (Standard 'EQ' or Trade-to-Trade 'BE')
-    # Using the new SCTYSRS column
-    df = df_raw[df_raw[mapping['SERIES']].isin(['EQ', 'BE'])].copy()
-    
-    # --- 3. THE STRATEGY ENGINE ---
-    # Convert columns to numeric to prevent calculation errors
-    for col in [mapping['CLOSE'], mapping['PREV_CLOSE'], mapping['VOLUME']]:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
+    # Map the most likely column names for 2026 UDiFF and Legacy formats
+    sym_col = find_col(['TCKRSYMB', 'SYMBOL'])
+    ser_col = find_col(['SCTYSRS', 'SERIES'])
+    cls_col = find_col(['CLSPRIC', 'CLOSE'])
+    prv_col = find_col(['PRVSCLSGPRIC', 'PREV'])
+    vol_col = find_col(['TTLTRADGVOL', 'TOTTRDQTY', 'VOLUME'])
 
-    df['CHANGE_PCT'] = (((df[mapping['CLOSE']] - df[mapping['PREV_CLOSE']]) / df[mapping['PREV_CLOSE']]) * 100).round(2)
-    df['VOL_FORCE'] = (df[mapping['VOLUME']] / df[mapping['VOLUME']].mean()).round(2)
-    
-    def apply_logic(row):
-        # THE SWORD: Melvin Li Momentum (High Vol + Price Breakout)
-        if row['CHANGE_PCT'] > 3.0 and row['VOL_FORCE'] > 2.0:
-            return "🟢 BUY (THE SWORD)"
-        # THE SHIELD: Jhunjhunwala Value Dip (Buying the fear/flatness)
-        elif -1.0 < row['CHANGE_PCT'] < 0.5 and row['VOL_FORCE'] > 1.2:
-            return "🔵 HOLD (THE SHIELD)"
-        return "WAIT"
+    if not all([sym_col, ser_col, cls_col, prv_col, vol_col]):
+        st.error(f"Critical Columns Missing. Found: {cols}")
+    else:
+        st.success(f"✅ System Online: Data for {data_date.strftime('%d %b %Y')}")
+        
+        # --- 3. FILTERING & STRATEGY ---
+        # Only keep 'EQ' (Standard) or 'BE' (Trade-to-trade)
+        df = df_raw[df_raw[ser_col].str.contains('EQ|BE', na=False, case=False)].copy()
+        
+        # Convert to Numeric
+        for c in [cls_col, prv_col, vol_col]:
+            df[c] = pd.to_numeric(df[c], errors='coerce')
 
-    df['STRATEGY'] = df.apply(apply_logic, axis=1)
-    df['TARGET (6%)'] = (df[mapping['CLOSE']] * 1.06).round(2)
-    df['STOP LOSS (3%)'] = (df[mapping['CLOSE']] * 0.97).round(2)
+        df['CHANGE_%'] = (((df[cls_col] - df[prv_col]) / df[prv_col]) * 100).round(2)
+        df['VOL_FORCE'] = (df[vol_col] / df[vol_col].median()).round(2)
+        
+        def get_signal(row):
+            # Melvin Li 'Sword' (Price + Volume Breakout)
+            if row['CHANGE_%'] > 3.0 and row['VOL_FORCE'] > 2.0:
+                return "🟢 BUY (THE SWORD)"
+            # Jhunjhunwala 'Shield' (Value accumulation)
+            elif -1.0 < row['CHANGE_%'] < 0.5 and row['VOL_FORCE'] > 1.2:
+                return "🔵 HOLD (THE SHIELD)"
+            return "WAIT"
 
-    # --- 4. FIRST-CLASS DISPLAY ---
-    results = df[df['STRATEGY'] != "WAIT"].sort_values(by='VOL_FORCE', ascending=False)
-    
-    st.subheader("🔥 Live Big Bull Alerts (NSE UDiFF)")
-    
-    # Rename columns for the user display
-    display_df = results[[mapping['SYMBOL'], mapping['CLOSE'], 'CHANGE_PCT', 'VOL_FORCE', 'STRATEGY', 'TARGET (6%)', 'STOP LOSS (3%)']]
-    display_df.columns = ['SYMBOL', 'LTP', 'CHG%', 'VOL_FORCE', 'STRATEGY', 'TARGET', 'STOPLOSS']
-    
-    st.table(display_df)
-    
-    # Download Feature
-    csv = display_df.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Download Trade Plan", data=csv, file_name=f"Mugan_Alerts_{data_date}.csv")
+        df['STRATEGY'] = df.apply(get_signal, axis=1)
+        df['TARGET(6%)'] = (df[cls_col] * 1.06).round(2)
+        df['STOP(3%)'] = (df[cls_col] * 0.97).round(2)
 
+        # --- 4. FIRST-CLASS DASHBOARD ---
+        results = df[df['STRATEGY'] != "WAIT"].sort_values(by='VOL_FORCE', ascending=False)
+        
+        # Cleaner Column Names for UI
+        ui_df = results[[sym_col, cls_col, 'CHANGE_%', 'VOL_FORCE', 'STRATEGY', 'TARGET(6%)', 'STOP(3%)']]
+        ui_df.columns = ['SYMBOL', 'PRICE', 'CHG%', 'VOL_FORCE', 'STRATEGY', 'TARGET', 'STOPLOSS']
+        
+        st.subheader("🔥 Live Buy Alerts")
+        st.table(ui_df)
+        
+        # CSV Export
+        st.download_button("📥 Download Trade Plan", ui_df.to_csv(index=False), "TradePlan.csv")
 else:
-    st.error("❌ NSE UDiFF Server unreachable. Please try again.")
-    
+    st.error("Failed to connect to NSE. Please refresh.")
+        
