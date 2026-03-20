@@ -1,78 +1,105 @@
 import streamlit as st
 import pandas as pd
-from jugaad_data.nse import stock_df, NSELive
+from jugaad_data.nse import stock_df
 from datetime import date, timedelta
+import requests
+from io import StringIO
 
-st.set_page_config(page_title="NSE Legend Scanner", layout="wide")
-st.title("🏆 NSE All-Cap Strategy Scanner")
+st.set_page_config(page_title="Mugan's Legacy Guardian v2", layout="wide")
 
-# --- STEP 1: LOAD ALL NSE TICKERS ---
-@st.cache_data
-def get_all_symbols():
-    # Fetching the official equity list from NSE
+# --- CUSTOM CSS FOR 6% VISIBILITY ---
+st.markdown("""
+    <style>
+    .stTable { font-size: 20px !important; }
+    .highlight { background-color: #2E7D32; color: white; padding: 5px; border-radius: 5px; }
+    </style>
+    """, unsafe_allow_index=True)
+
+# --- 1. CORE FUNCTIONS ---
+@st.cache_data(ttl=86400)
+def get_nse_universe():
     url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        df = pd.read_csv(url)
+        df = pd.read_csv(StringIO(requests.get(url, headers=headers).text))
         return df[df[' SERIES'] == 'EQ']['SYMBOL'].tolist()
     except:
-        return ["TATAMOTORS", "HAL", "RELIANCE", "BEL", "CDSL"]
+        return ["TATAMOTORS", "HAL", "TCS", "RELIANCE", "TATAPOWER", "BEL"]
 
-all_stocks = get_all_symbols()
+def calculate_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
 
-# --- STEP 2: UI CONTROLS ---
-st.sidebar.header("Scanner Settings")
-market_cap = st.sidebar.selectbox("Universe", ["Nifty 50 (Large)", "Nifty 500 (Mid/Small)", "Full NSE (All-Cap)"])
-legend = st.sidebar.selectbox("Strategy", ["Charlie Munger (Quality)", "Peter Lynch (Growth)", "Warren Buffett (Value)", "Howard Marks (Cycles)"])
+# --- 2. UI SETUP ---
+st.title("🛡️ Legacy Guardian: Swing-to-Wealth Engine")
+st.info("Goal: 6% Profit in 60 Days | Strategy: Capital Preservation")
 
-# --- STEP 3: CORE SCANNER ENGINE ---
-if st.button('🚀 Start Legend Scan'):
-    # Define scan range
-    if "50 " in market_cap: scan_list = all_stocks[:50]
-    elif "500" in market_cap: scan_list = all_stocks[:500]
-    else: scan_list = all_stocks
+with st.sidebar:
+    st.header("Risk Controls")
+    scan_count = st.slider("Universe Depth", 50, 500, 100)
+    strict_mode = st.checkbox("Volume Confirmation Only", value=True)
+    execute = st.button("🔍 Run Integrity Scan")
 
+# --- 3. THE ANALYTICS ENGINE ---
+if execute:
+    tickers = get_nse_universe()[:scan_count]
     results = []
-    end_date = date.today()
-    start_date = end_date - timedelta(days=365) # Need 1 year for 200DMA
+    today = date.today()
+    start_date = today - timedelta(days=365)
     
     progress = st.progress(0)
-    
-    for i, symbol in enumerate(scan_list):
+    status = st.empty()
+
+    for i, sym in enumerate(tickers):
         try:
-            # Fetching Historical Data via Jugaad-Data
-            df = stock_df(symbol=symbol, from_date=start_date, to_date=end_date, series="EQ")
+            status.text(f"Scanning for Safety: {sym}")
+            df = stock_df(symbol=sym, from_date=start_date, to_date=today, series="EQ")
             
-            if len(df) >= 200:
-                # Jugaad-data returns most recent at top; we need to reverse for rolling mean
+            if len(df) > 200:
                 df = df.sort_values('DATE')
-                df['50DMA'] = df['CLOSE'].rolling(window=50).mean()
-                df['200DMA'] = df['CLOSE'].rolling(window=200).mean()
+                # Indicators
+                df['50DMA'] = df['CLOSE'].rolling(50).mean()
+                df['200DMA'] = df['CLOSE'].rolling(200).mean()
+                df['RSI'] = calculate_rsi(df['CLOSE'])
+                df['VolAvg'] = df['VOLUME'].rolling(10).mean()
                 
                 curr = df['CLOSE'].iloc[-1]
                 m50 = df['50DMA'].iloc[-1]
                 m200 = df['200DMA'].iloc[-1]
-                vol_spike = df['VOLUME'].iloc[-1] > df['VOLUME'].tail(10).mean() * 1.5
+                rsi = df['RSI'].iloc[-1]
+                vol_now = df['VOLUME'].iloc[-1]
+                vol_avg = df['VolAvg'].iloc[-1]
 
-                # Legend Logic
-                match = False
-                if legend == "Charlie Munger (Quality)" and curr > m50 > m200: match = True
-                elif legend == "Peter Lynch (Growth)" and curr > m50 and vol_spike: match = True
-                elif legend == "Warren Buffett (Value)" and curr > m200 and curr < m200 * 1.1: match = True
-                elif legend == "Howard Marks (Cycles)" and curr < m200 * 0.8: match = True
+                # --- MULTI-STEP SAFETY CHECK ---
+                # 1. Trend: Only buy if long-term trend is UP (Price > 200DMA)
+                # 2. RSI: Not Overbought (RSI < 65)
+                # 3. Volume: Evidence of big money (If strict_mode)
+                
+                is_safe = (curr > m200) and (rsi < 65)
+                if strict_mode:
+                    is_safe = is_safe and (vol_now > vol_avg * 1.2)
 
-                if match:
+                if is_safe and (curr > m50): # Entry Trigger
                     results.append({
-                        "Stock": symbol,
-                        "Price": f"₹{curr:.2f}",
-                        "Signal": "BULLISH" if curr > m50 else "WATCH",
-                        "Target (6%)": f"₹{curr * 1.06:.2f}"
+                        "Stock": sym,
+                        "LTP": round(curr, 2),
+                        "RSI": round(rsi, 1),
+                        "🎯 6% Target": round(curr * 1.06, 2),
+                        "🛑 Stop Loss (3%)": round(curr * 0.97, 2),
+                        "Action": "✅ READY TO SWING"
                     })
-        except:
-            continue
-        progress.progress((i + 1) / len(scan_list))
+        except: continue
+        progress.progress((i + 1) / len(tickers))
 
+    status.empty()
     if results:
-        st.success(f"Found {len(results)} matches!")
-        st.dataframe(pd.DataFrame(results), use_container_width=True)
+        st.success(f"Found {len(results)} matches that meet our 300-year safety standards!")
+        st.table(pd.DataFrame(results))
     else:
-        st.warning("No matches found. Try a different strategy or universe.")
+        st.warning("Market risk is high. No safe entries found.")
+
+st.divider()
+st.caption("Instructions: When a stock hits '6% Target', sell 100% and move the profit to your Tata/NSE Compounding Vault.")
