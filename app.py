@@ -3,68 +3,85 @@ import pandas as pd
 from jugaad_data.nse import bhavcopy_save
 from datetime import date, timedelta
 import os
+import time
 
-# 1. SETUP & PAGE CONFIG
+# --- CONFIGURATION ---
 st.set_page_config(page_title="Mugan's Big Bull Guardian", layout="wide")
 st.title("🛡️ Mugan's Legacy Guardian: Titan Edition")
-st.subheader("Jhunjhunwala Conviction + Melvin Li Precision")
+st.markdown("### *Jhunjhunwala Quality + Melvin Li Precision*")
 
-# 2. DATA FETCHING (Error-Resilient)
+# --- 1. ROBUST DATA ENGINE ---
 @st.cache_data(ttl=3600)
-def get_market_data():
-    try:
-        # Fetching latest available Bhavcopy (avoiding weekends)
-        today = date.today()
-        # Find the most recent weekday
-        target_date = today - timedelta(days=1) if today.weekday() < 5 else today - timedelta(days=(today.weekday() - 4))
-        
-        file_path = bhavcopy_save(target_date, ".")
-        df = pd.read_csv(file_path)
-        os.remove(file_path) # Clean up
-        return df
-    except Exception as e:
-        st.error(f"NSE Connection Error: {e}")
-        return None
+def fetch_nse_data():
+    for i in range(1, 7): # Look back up to 6 days to find a working day
+        try:
+            target_date = date.today() - timedelta(days=i)
+            if target_date.weekday() >= 5: continue # Skip Sat/Sun
+            
+            csv_path = bhavcopy_save(target_date, ".")
+            df = pd.read_csv(csv_path)
+            
+            # Clean up: remove the downloaded file to keep the server light
+            if os.path.exists(csv_path):
+                os.remove(csv_path)
+            return df, target_date
+        except Exception:
+            time.sleep(1)
+            continue
+    return None, None
 
-data = get_market_data()
+df_raw, data_date = fetch_nse_data()
 
-if data is not None:
-    # 3. LOGIC ENGINE (The Plot)
-    # Cleaning data for NSE specific columns
-    df = data[data['SERIES'] == 'EQ'].copy()
+if df_raw is not None:
+    st.success(f"✅ Data Synced: {data_date.strftime('%d %b %Y')}")
     
-    # Calculating basic metrics
-    df['VOL_FORCE'] = df['TOTTRDQTY'] / df['TOTTRDQTY'].rolling(window=10).mean()
-    df['CHANGE_PCT'] = ((df['CLOSE'] - df['PREVCLOSE']) / df['PREVCLOSE']) * 100
-
-    # 4. STRATEGY CLASSIFICATION
+    # --- 2. THE FILTERING LAYER ---
+    # Only Equity (Mainboard) stocks
+    df = df_raw[df_raw['SERIES'] == 'EQ'].copy()
+    
+    # Technical Calculations (The "Plot" Essentials)
+    df['CHANGE_PCT'] = (((df['CLOSE'] - df['PREVCLOSE']) / df['PREVCLOSE']) * 100).round(2)
+    df['VOL_FORCE'] = (df['TOTTRDQTY'] / df['TOTTRDQTY'].rolling(window=10).mean()).fillna(1).round(2)
+    
+    # --- 3. THE STRATEGY MATRIX (Shield, Sword, Anchor) ---
     def apply_strategy(row):
-        # Simplified DMA logic for the scanner (can be expanded with historical data)
-        is_uptrend = row['CLOSE'] > row['PREVCLOSE'] 
-        high_vol = row['VOL_FORCE'] > 1.5
+        # THE SWORD (Melvin Li Breakout)
+        if row['CHANGE_PCT'] > 3.0 and row['VOL_FORCE'] > 1.8:
+            return "🟢 BUY (THE SWORD)", "HIGH"
         
-        if is_uptrend and high_vol:
-            return "THE SWORD (Breakout)", "🟢 BUY"
-        elif is_uptrend and not high_vol:
-            return "THE ANCHOR (Momentum)", "🟡 HOLD"
-        else:
-            return "WATCHLIST", "⚪ WAIT"
+        # THE SHIELD (Jhunjhunwala Value Dip)
+        elif -1.5 < row['CHANGE_PCT'] < 0.5 and row['VOL_FORCE'] > 1.2:
+            return "🔵 HOLD (THE SHIELD)", "MEDIUM"
+        
+        # THE ANCHOR (Steady Momentum)
+        elif 0.5 < row['CHANGE_PCT'] < 2.5 and row['VOL_FORCE'] > 0.9:
+            return "🟡 WATCH (THE ANCHOR)", "LOW"
+            
+        return "WAIT", "NONE"
 
-    df[['STRATEGY', 'BUY_ALERT']] = df.apply(lambda x: pd.Series(apply_strategy(x)), axis=1)
+    df[['STRATEGY', 'ALERT_LVL']] = df.apply(lambda x: pd.Series(apply_strategy(x)), axis=1)
 
-    # 5. THE DASHBOARD DISPLAY
-    st.write(f"### Market Scan Results ({len(df)} Stocks Analyzed)")
-    
-    # Filter for Buy Alerts only to keep it "First-Class"
-    final_df = df[df['BUY_ALERT'] == '🟢 BUY'].sort_values(by='VOL_FORCE', ascending=False)
-    
-    # Adding Target & Stop Loss Columns
-    final_df['TARGET (6%)'] = (final_df['CLOSE'] * 1.06).round(2)
-    final_df['STOP LOSS (3%)'] = (final_df['CLOSE'] * 0.97).round(2)
+    # --- 4. EXECUTION PARAMETERS (6% / 3%) ---
+    df['BUY_PRICE'] = df['CLOSE']
+    df['TARGET (6%)'] = (df['CLOSE'] * 1.06).round(2)
+    df['STOP LOSS (3%)'] = (df['CLOSE'] * 0.97).round(2)
 
-    # Displaying Final Results
-    st.dataframe(final_df[['SYMBOL', 'CLOSE', 'CHANGE_PCT', 'VOL_FORCE', 'STRATEGY', 'BUY_ALERT', 'TARGET (6%)', 'STOP LOSS (3%)']], 
-                 use_container_width=True)
+    # --- 5. THE DASHBOARD VIEW ---
+    # Filter only for stocks showing an active strategy
+    final_df = df[df['ALERT_LVL'] != "NONE"].sort_values(by='VOL_FORCE', ascending=False)
+
+    st.subheader("🔥 Live Buy Alerts")
+    # Displaying the "First-Class" Table
+    st.dataframe(
+        final_df[['SYMBOL', 'CLOSE', 'CHANGE_PCT', 'VOL_FORCE', 'STRATEGY', 'TARGET (6%)', 'STOP LOSS (3%)']],
+        use_container_width=True,
+        hide_index=True
+    )
+
+    # --- 6. EXPORT FEATURE ---
+    csv_data = final_df.to_csv(index=False).encode('utf-8')
+    st.download_button("📥 Download Today's Trade Plan", data=csv_data, file_name=f"Mugan_Alerts_{data_date}.csv", mime='text/csv')
 
 else:
-    st.warning("Please wait for NSE to update the daily Bhavcopy file (usually after 6:00 PM IST).")
+    st.error("NSE Data Server Timeout. Please refresh the page.")
+    
