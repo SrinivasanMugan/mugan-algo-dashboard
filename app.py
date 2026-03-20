@@ -1,101 +1,70 @@
 import streamlit as st
 import pandas as pd
-from jugaad_data.nse import stock_df
+from jugaad_data.nse import bhavcopy_save
 from datetime import date, timedelta
-import requests
-from io import StringIO
+import os
 
-st.set_page_config(page_title="Mugan's Legacy Guardian", layout="wide")
+# 1. SETUP & PAGE CONFIG
+st.set_page_config(page_title="Mugan's Big Bull Guardian", layout="wide")
+st.title("🛡️ Mugan's Legacy Guardian: Titan Edition")
+st.subheader("Jhunjhunwala Conviction + Melvin Li Precision")
 
-# --- 1. THE NATIVE SYMBOL LOADER ---
-@st.cache_data(ttl=86400)
-def get_native_symbols():
-    url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
-    headers = {'User-Agent': 'Mozilla/5.0'}
+# 2. DATA FETCHING (Error-Resilient)
+@st.cache_data(ttl=3600)
+def get_market_data():
     try:
-        df = pd.read_csv(StringIO(requests.get(url, headers=headers).text))
-        return df[df[' SERIES'] == 'EQ']['SYMBOL'].tolist()
-    except:
-        return ["TATAMOTORS", "HAL", "TCS", "RELIANCE", "TATAPOWER", "BEL"]
+        # Fetching latest available Bhavcopy (avoiding weekends)
+        today = date.today()
+        # Find the most recent weekday
+        target_date = today - timedelta(days=1) if today.weekday() < 5 else today - timedelta(days=(today.weekday() - 4))
+        
+        file_path = bhavcopy_save(target_date, ".")
+        df = pd.read_csv(file_path)
+        os.remove(file_path) # Clean up
+        return df
+    except Exception as e:
+        st.error(f"NSE Connection Error: {e}")
+        return None
 
-all_symbols = get_native_symbols()
+data = get_market_data()
 
-# --- 2. THE UPDATED DROPDOWNS ---
-st.title("🛡️ Legacy Guardian: Swing-to-Wealth")
-st.markdown("#### Capital Preservation Protocol | Target: 6% Profit")
-
-with st.sidebar:
-    st.header("1. Selection Universe")
-    # Updated: Now specifically for NSE groupings
-    universe = st.selectbox("Choose Universe", 
-                            ["Nifty 50 (Safest)", "Nifty 200 (Growth)", "All-Cap (Full Market)"])
+if data is not None:
+    # 3. LOGIC ENGINE (The Plot)
+    # Cleaning data for NSE specific columns
+    df = data[data['SERIES'] == 'EQ'].copy()
     
-    st.header("2. Safety Strategy")
-    # Updated: Locked into the 300-year tactics we discussed
-    strategy = st.selectbox("Choose Strategy", 
-                            ["THE SHIELD (Mean Reversion)", 
-                             "THE SWORD (Volume Breakout)", 
-                             "THE ANCHOR (Quality Momentum)"])
+    # Calculating basic metrics
+    df['VOL_FORCE'] = df['TOTTRDQTY'] / df['TOTTRDQTY'].rolling(window=10).mean()
+    df['CHANGE_PCT'] = ((df['CLOSE'] - df['PREVCLOSE']) / df['PREVCLOSE']) * 100
+
+    # 4. STRATEGY CLASSIFICATION
+    def apply_strategy(row):
+        # Simplified DMA logic for the scanner (can be expanded with historical data)
+        is_uptrend = row['CLOSE'] > row['PREVCLOSE'] 
+        high_vol = row['VOL_FORCE'] > 1.5
+        
+        if is_uptrend and high_vol:
+            return "THE SWORD (Breakout)", "🟢 BUY"
+        elif is_uptrend and not high_vol:
+            return "THE ANCHOR (Momentum)", "🟡 HOLD"
+        else:
+            return "WATCHLIST", "⚪ WAIT"
+
+    df[['STRATEGY', 'BUY_ALERT']] = df.apply(lambda x: pd.Series(apply_strategy(x)), axis=1)
+
+    # 5. THE DASHBOARD DISPLAY
+    st.write(f"### Market Scan Results ({len(df)} Stocks Analyzed)")
     
-    scan_limit = st.slider("Stocks to Analyze", 50, 500, 100)
-    run_btn = st.button("🚀 EXECUTE STRATEGIC SCAN")
-
-# --- 3. THE EXECUTION ENGINE ---
-if run_btn:
-    # Filter the list based on selection
-    if "50" in universe: scan_list = all_symbols[:50]
-    elif "200" in universe: scan_list = all_symbols[:200]
-    else: scan_list = all_symbols[:scan_limit]
-
-    results = []
-    today = date.today()
-    start_date = today - timedelta(days=365) # 1 Year for 200DMA
+    # Filter for Buy Alerts only to keep it "First-Class"
+    final_df = df[df['BUY_ALERT'] == '🟢 BUY'].sort_values(by='VOL_FORCE', ascending=False)
     
-    progress = st.progress(0)
-    
-    for i, sym in enumerate(scan_list):
-        try:
-            # PURE NATIVE DATA FETCH
-            df = stock_df(symbol=sym, from_date=start_date, to_date=today, series="EQ")
-            
-            if len(df) > 200:
-                df = df.sort_values('DATE')
-                df['50DMA'] = df['CLOSE'].rolling(50).mean()
-                df['200DMA'] = df['CLOSE'].rolling(200).mean()
-                
-                curr = df['CLOSE'].iloc[-1]
-                m50 = df['50DMA'].iloc[-1]
-                m200 = df['200DMA'].iloc[-1]
-                vol_spike = df['VOLUME'].iloc[-1] > (df['VOLUME'].tail(10).mean() * 1.5)
+    # Adding Target & Stop Loss Columns
+    final_df['TARGET (6%)'] = (final_df['CLOSE'] * 1.06).round(2)
+    final_df['STOP LOSS (3%)'] = (final_df['CLOSE'] * 0.97).round(2)
 
-                # STRATEGY LOGIC GATES
-                match = False
-                if "SHIELD" in strategy:
-                    # Logic: Good companies temporarily below average
-                    if curr < m50 and curr > m200: match = True
-                elif "SWORD" in strategy:
-                    # Logic: Strong breakout with high volume
-                    if curr > m50 and m50 > m200 and vol_spike: match = True
-                elif "ANCHOR" in strategy:
-                    # Logic: Steady bluechip uptrend
-                    if curr > m50 and m50 > m200: match = True
+    # Displaying Final Results
+    st.dataframe(final_df[['SYMBOL', 'CLOSE', 'CHANGE_PCT', 'VOL_FORCE', 'STRATEGY', 'BUY_ALERT', 'TARGET (6%)', 'STOP LOSS (3%)']], 
+                 use_container_width=True)
 
-                if match:
-                    results.append({
-                        "Symbol": sym,
-                        "Price": f"₹{curr:,.2f}",
-                        "6% Target": f"₹{curr * 1.06:,.2f}",
-                        "3% Stop Loss": f"₹{curr * 0.97:,.2f}",
-                        "Status": "✅ STABLE"
-                    })
-        except: continue
-        progress.progress((i + 1) / len(scan_list))
-
-    if results:
-        st.success(f"Strategy {strategy} identified {len(results)} stocks.")
-        st.table(pd.DataFrame(results))
-    else:
-        st.warning("Safety Criteria not met for any stocks in this universe today.")
-
-st.divider()
-st.info("Remember: Swing for 6%, then move the profits into your Tata/NSE Compounding Vault.")
+else:
+    st.warning("Please wait for NSE to update the daily Bhavcopy file (usually after 6:00 PM IST).")
