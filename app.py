@@ -1,102 +1,90 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-from jugaad_data.nse import stock_df
-from datetime import datetime, timedelta
+from jugaad_data.nse import NSELive
+from streamlit_autorefresh import st_autorefresh
+from datetime import datetime
 
-class TitanNineEngine:
+# 1. LIVE REFRESH: Updates every 60 seconds (NSE Safe Limit)
+st_autorefresh(interval=60 * 1000, key="live_update")
+
+class TitanNinerLive:
     def __init__(self):
-        self.tp_pct = 0.03  # 3% Monthly Target
-        self.sl_pct = 0.01  # 1% Strict Stop Loss
-        self.min_score = 80 # High-conviction threshold
+        self.live = NSELive()
+        self.target_pct = 0.03 # 3% Target
+        self.sl_pct = 0.01     # 1% Stop Loss
 
-    def get_data(self, symbol):
+    def get_market_status(self):
+        """Checks if the NSE is currently open."""
         try:
-            end = datetime.now().date()
-            start = end - timedelta(days=250)
-            df = stock_df(symbol=symbol, from_date=start, to_date=end)
-            return df.sort_values('DATE')
+            status = self.live.market_status()
+            return status['marketState'][0]['marketStatus']
+        except:
+            return "Exchange Closed"
+
+    def fetch_price(self, symbol):
+        """Pulls the Last Traded Price (LTP) live."""
+        try:
+            quote = self.live.stock_quote(symbol)
+            return float(quote['priceInfo']['lastPrice'])
         except:
             return None
 
-    def apply_titan_filters(self, df, peg, d_e):
-        """
-        STRICT FILTER LOGIC:
-        1. Lynch: PEG < 1.0 & Debt/Equity < 1.2
-        2. Marks: RSI between 40-60 (No Euphoria) & ATR < 1% (Low Noise)
-        """
-        # Technicals
-        delta = df['CLOSE'].diff()
-        gain = delta.where(delta > 0, 0).rolling(window=14).mean()
-        loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
-        df['RSI'] = 100 - (100 / (1 + (gain / loss)))
-        
-        # Volatility Check (ATR) - CRITICAL for 1% Stop Loss
-        df['TR'] = np.maximum(df['HIGH'] - df['LOW'], 
-                    np.maximum(abs(df['HIGH'] - df['CLOSE'].shift(1)), 
-                    abs(df['LOW'] - df['CLOSE'].shift(1))))
-        df['ATR_Pct'] = df['TR'].rolling(window=14).mean() / df['CLOSE']
+# --- UI SETUP ---
+st.set_page_config(layout="wide", page_title="Titan 9 Live")
+engine = TitanNinerLive()
 
-        last = df.iloc[-1]
-        score = 0
+st.title("🛡️ Titan 9 Live Execution")
+status = engine.get_market_status()
+st.sidebar.markdown(f"**Market Status:** {status}")
+st.sidebar.write(f"Last Sync: {datetime.now().strftime('%H:%M:%S')}")
 
-        # FILTER 1: PETER LYNCH (Fundamentals)
-        if peg < 1.0: score += 40
-        if d_e < 1.2: score += 10
+# 2. YOUR ACTIVE TRADES (The Top 9)
+# In a full setup, these symbols come from your Daily Scanner results.
+# For now, we input your current active watch-list.
+watch_list = ["RELIANCE", "TCS", "HDFCBANK", "INFY", "TITAN", "ICICIBANK", "AXISBANK", "BHARTIARTL", "LT"]
 
-        # FILTER 2: HOWARD MARKS (Cycle & Anti-Euphoria)
-        # We target the 'Sweet Spot' where the stock is stable but ready.
-        if 40 <= last['RSI'] <= 60: score += 30
-        
-        # SAFETY CHECK: If daily volatility > 1.2%, the 1% SL is too risky.
-        if last['ATR_Pct'] < 0.012: score += 20 
+# 3. THE 3x3 EXECUTION GRID
+st.subheader("Current Market Monitoring (1:3 Risk-Reward)")
 
-        return score, last['CLOSE']
-
-# --- STREAMLIT UI ---
-st.set_page_config(layout="wide", page_title="Titan 9 Guardian")
-st.title("🛡️ Mugan's Legacy: The Titan 9")
-st.caption("Top 360 NSE | 1:3 Risk-Reward | Lynch-Marks Infusion")
-
-# This would ideally be a loop through your Top 360 list
-# For this audit, we display the results of a processed scan
-def show_dashboard(results_list):
-    # Sort and take exactly Top 9
-    top_9 = pd.DataFrame(results_list).sort_values(by="Score", ascending=False).head(9)
-    
-    # 3x3 Grid Layout
-    for i in range(0, len(top_9), 3):
-        cols = st.columns(3)
-        for j in range(3):
-            if i + j < len(top_9):
-                stock = top_9.iloc[i + j]
+for i in range(0, len(watch_list), 3):
+    cols = st.columns(3)
+    for j in range(3):
+        if i + j < len(watch_list):
+            symbol = watch_list[i + j]
+            ltp = engine.fetch_price(symbol)
+            
+            if ltp:
+                # Assuming entry was at previous close or 1% below current for demo
+                # In your real version, 'entry_price' would be a fixed value from your trade log
+                entry_price = ltp * 0.99 
+                tp = round(entry_price * 1.03, 2)
+                sl = round(entry_price * 0.99, 2)
+                
                 with cols[j]:
                     with st.container(border=True):
-                        st.subheader(stock['Symbol'])
-                        st.progress(stock['Score'] / 100)
+                        st.markdown(f"### {symbol}")
                         
-                        p = stock['Price']
-                        tp = round(p * 1.03, 2)
-                        sl = round(p * 0.99, 2)
+                        # High Visibility Logic
+                        if ltp >= tp:
+                            st.success(f"🔥 TARGET HIT: ₹{ltp}")
+                        elif ltp <= sl:
+                            st.error(f"🚨 STOP LOSS HIT: ₹{ltp}")
+                        else:
+                            st.metric("LTP", f"₹{ltp}", delta=f"{round(((ltp/entry_price)-1)*100,2)}%")
+
+                        st.write(f"**Entry:** ₹{round(entry_price, 2)}")
+                        st.write(f"**Target (3%):** ₹{tp} | **Stop (1%):** ₹{sl}")
                         
-                        c1, c2 = st.columns(2)
-                        c1.metric("Entry", f"₹{p}")
-                        c1.metric("Score", f"{stock['Score']}%")
-                        c2.write(f"**Target:** :green[₹{tp}]")
-                        c2.write(f"**Stop:** :red[₹{sl}]")
-                        st.caption("1:3 Ratio Verified")
+                        # Progress bar towards 3%
+                        progress = min(max((ltp - entry_price) / (tp - entry_price), 0), 1)
+                        st.progress(progress)
 
-# Mock results for visual validation
-processed_stocks = [
-    {"Symbol": "RELIANCE", "Score": 95, "Price": 2980},
-    {"Symbol": "HDFCBANK", "Score": 92, "Price": 1460},
-    {"Symbol": "TCS", "Score": 90, "Price": 3910},
-    {"Symbol": "TITAN", "Score": 88, "Price": 3250},
-    {"Symbol": "INFY", "Score": 85, "Price": 1620},
-    {"Symbol": "AXISBANK", "Score": 84, "Price": 1080},
-    {"Symbol": "ICICIBANK", "Score": 82, "Price": 1120},
-    {"Symbol": "BHARTIARTL", "Score": 81, "Price": 1210},
-    {"Symbol": "TATAMOTORS", "Score": 80, "Price": 940}
-]
-
-show_dashboard(processed_stocks)
+# 4. EXECUTION GUIDELINE
+st.divider()
+with st.expander("Indian Standard Execution Rules"):
+    st.write("""
+    1. **Entry:** Only when Titan Score > 80% and Price > 20 EMA.
+    2. **Exit (Profit):** Immediate exit at 3% or use a trailing stop if momentum is high.
+    3. **Exit (Loss):** Hard exit if Daily Candle closes 1% below Entry.
+    4. **Rotation:** Re-invest capital into the next 'Titan 9' pick immediately.
+    """)
