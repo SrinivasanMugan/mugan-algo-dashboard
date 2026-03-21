@@ -1,60 +1,107 @@
 import streamlit as st
 import pandas as pd
-import requests
-import time
-from streamlit_autorefresh import st_autorefresh
+import pandas_ta as ta
+import plotly.graph_objects as go
+from datetime import date, timedelta
+from jugaad_data.nse import stock_df
 
-# 1. CLOUD OPTIMIZATION: 2-minute refresh to avoid IP bans
-st_autorefresh(interval=120 * 1000, key="titan_sync")
+# --- CONFIGURATION ---
+st.set_page_config(page_title="Minervini Pro - NSE India", layout="wide")
+st.title("🎯 Minervini SEPA & VCP Pro Dashboard")
+st.markdown("### Powered by `jugaad-data` for the Indian Market")
 
-class TitanFullEngine:
-    def __init__(self):
-        self.session = requests.Session()
-        self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.nseindia.com/"
+# Add your core watchlist here
+TICKERS = ["RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY", "BHARTIARTL", "SBIN", "HAL", "TATASTEEL"]
+
+def get_minervini_pro(ticker):
+    try:
+        # Fetching data (400 days to cover 200 SMA and 52W High/Low)
+        end_date = date.today()
+        start_date = end_date - timedelta(days=400) 
+        df = stock_df(symbol=ticker, from_date=start_date, to_date=end_date, series="EQ")
+        
+        # Sort and Clean
+        df = df.sort_values('DATE').reset_index(drop=True)
+        df.rename(columns={'CLOSE': 'Close', 'HIGH': 'High', 'LOW': 'Low', 'OPEN': 'Open', 'VOLUME': 'Volume'}, inplace=True)
+        
+        # 1. TECHNICAL INDICATORS
+        df['SMA_50'] = ta.sma(df['Close'], length=50)
+        df['SMA_150'] = ta.sma(df['Close'], length=150)
+        df['SMA_200'] = ta.sma(df['Close'], length=200)
+        df['Vol_Avg'] = ta.sma(df['Volume'], length=50)
+        
+        # 2. TREND TEMPLATE LOGIC
+        curr = df['Close'].iloc[-1]
+        low_52 = df['Low'].tail(252).min()
+        high_52 = df['High'].tail(252).max()
+        
+        c1 = curr > df['SMA_150'].iloc[-1] and curr > df['SMA_200'].iloc[-1]
+        c2 = df['SMA_150'].iloc[-1] > df['SMA_200'].iloc[-1]
+        c3 = df['SMA_200'].iloc[-1] > df['SMA_200'].iloc[-20]
+        c4 = df['SMA_50'].iloc[-1] > df['SMA_150'].iloc[-1] and df['SMA_50'].iloc[-1] > df['SMA_200'].iloc[-1]
+        c5 = curr > df['SMA_50'].iloc[-1]
+        c6 = curr > (low_52 * 1.30)
+        c7 = curr > (high_52 * 0.75)
+        
+        trend_score = sum([c1, c2, c3, c4, c5, c6, c7])
+        
+        # 3. VCP & BREAKOUT LOGIC (THE "JUGAAD" EXTRAS)
+        # Check if Volatility is Contracting (Last 5 days range < Avg Range of last 20 days)
+        df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
+        current_atr = df['ATR'].iloc[-1]
+        avg_atr = df['ATR'].tail(20).mean()
+        is_tight = "YES" if current_atr < (avg_atr * 0.8) else "No"
+        
+        # Check for Volume Spike (Today's Volume > 150% of 50-day average)
+        vol_spike = "🚀 SPIKE" if df['Volume'].iloc[-1] > (df['Vol_Avg'].iloc[-1] * 1.5) else "Normal"
+        
+        return {
+            "Ticker": ticker,
+            "Price": f"₹{curr:,.2f}",
+            "Trend": f"{trend_score}/7",
+            "VCP Tightness": is_tight,
+            "Vol Breakout": vol_spike,
+            "Gap to High": f"{((high_52 - curr)/high_52)*100:.1f}%",
+            "Data": df
         }
-        self.session.headers.update(self.headers)
-        # Visit home to get cookies
-        try: self.session.get("https://www.nseindia.com", timeout=10)
-        except: pass
+    except:
+        return None
 
-    def get_live_stats(self, symbol):
-        url = f"https://www.nseindia.com/api/quote-equity?symbol={symbol}"
-        try:
-            time.sleep(1) # Human-like delay
-            resp = self.session.get(url, timeout=10).json()
-            return {
-                "price": float(resp['priceInfo']['lastPrice']),
-                "pChange": float(resp['priceInfo']['pChange'])
-            }
-        except: return None
+# --- UI DISPLAY ---
+results = []
+with st.spinner("Scanning NSE for Superperformers..."):
+    for t in TICKERS:
+        data = get_minervini_pro(t)
+        if data: results.append(data)
 
-# --- UI LAYER ---
-st.set_page_config(layout="wide", page_title="Titan 9 Full")
-st.title("🛡️ Titan 9: Full Strategy Engine")
+if results:
+    df_res = pd.DataFrame(results).drop(columns=['Data'])
+    
+    # Highlight Row if Trend is 7/7 and VCP is Tight
+    def highlight_picks(val):
+        color = 'background-color: #1e3d2f' if val == "7/7" else ''
+        return color
 
-if 'engine' not in st.session_state:
-    st.session_state.engine = TitanFullEngine()
+    st.dataframe(df_res.style.applymap(highlight_picks, subset=['Trend']), use_container_width=True)
 
-# THE TOP 9 SELECTION (Based on Lynch/Marks Analysis)
-watch_list = ["RELIANCE", "TCS", "HDFCBANK", "INFY", "TITAN", "ICICIBANK", "AXISBANK", "BHARTIARTL", "LT"]
+    # Deep Dive Visualization
+    st.divider()
+    choice = st.selectbox("Inspect Chart for 'Cheat' Entry:", TICKERS)
+    s_data = next(x for x in results if x["Ticker"] == choice)['Data'].tail(100)
+    
+    fig = go.Figure(data=[go.Candlestick(x=s_data['DATE'], open=s_data['Open'], high=s_data['High'], low=s_data['Low'], close=s_data['Close'], name="Price")])
+    fig.add_trace(go.Scatter(x=s_data['DATE'], y=s_data['SMA_50'], name="50 SMA", line=dict(color='orange')))
+    fig.add_trace(go.Scatter(x=s_data['DATE'], y=s_data['SMA_200'], name="200 SMA", line=dict(color='red')))
+    
+    fig.update_layout(height=600, template="plotly_dark", title=f"{choice} - Look for Tight Price Action & Volume Spikes")
+    st.plotly_chart(fig, use_container_width=True)
 
-cols = st.columns(3)
-for i, symbol in enumerate(watch_list):
-    data = st.session_state.engine.get_live_stats(symbol)
-    with cols[i % 3]:
-        with st.container(border=True):
-            if data:
-                p = data['price']
-                tp = round(p * 1.03, 2)
-                sl = round(p * 0.99, 2)
-                st.metric(symbol, f"₹{p}", f"{data['pChange']}%")
-                st.write(f"**Target (3%):** :green[₹{tp}]")
-                st.write(f"**Stop (1%):** :red[₹{sl}]")
-                # Compounding Logic Note
-                st.caption(f"Goal: Roll into next trade after ₹{tp}")
-            else:
-                st.warning(f"{symbol}: Connection Refused")
-                st.caption("NSE is rate-limiting the cloud server. Stand by...")
+else:
+    st.warning("NSE Data fetch failed. Ensure you have an active internet connection.")
+
+st.sidebar.markdown("""
+### 📖 How to use:
+1. **Trend 7/7:** The stock is in a massive uptrend.
+2. **VCP Tightness = YES:** The price is 'coiling' like a spring. This is where you look for an entry.
+3. **Vol Breakout = SPIKE:** Institutions are buying. 
+""")
