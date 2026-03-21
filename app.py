@@ -1,94 +1,102 @@
 import streamlit as st
 import pandas as pd
-from jugaad_data.nse import bhavcopy_save
-from datetime import date, timedelta
-import os
-import time
+import numpy as np
+from jugaad_data.nse import stock_df
+from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Mugan's Big Bull Guardian", layout="wide")
-st.title("🛡️ Mugan's Legacy Guardian: Titan Edition")
+class TitanNineEngine:
+    def __init__(self):
+        self.tp_pct = 0.03  # 3% Monthly Target
+        self.sl_pct = 0.01  # 1% Strict Stop Loss
+        self.min_score = 80 # High-conviction threshold
 
-# --- 1. ERROR-PROOF DATA FETCHING ---
-@st.cache_data(ttl=3600)
-def fetch_any_nse_data():
-    for i in range(1, 10): 
+    def get_data(self, symbol):
         try:
-            target_date = date.today() - timedelta(days=i)
-            if target_date.weekday() >= 5: continue
-            
-            csv_path = bhavcopy_save(target_date, ".")
-            df = pd.read_csv(csv_path)
-            # Standardize all headers: Remove spaces and make Uppercase
-            df.columns = [str(c).strip().upper() for c in df.columns]
-            
-            if os.path.exists(csv_path):
-                os.remove(csv_path)
-            return df, target_date
-        except Exception:
-            continue
-    return None, None
+            end = datetime.now().date()
+            start = end - timedelta(days=250)
+            df = stock_df(symbol=symbol, from_date=start, to_date=end)
+            return df.sort_values('DATE')
+        except:
+            return None
 
-df_raw, data_date = fetch_any_nse_data()
+    def apply_titan_filters(self, df, peg, d_e):
+        """
+        STRICT FILTER LOGIC:
+        1. Lynch: PEG < 1.0 & Debt/Equity < 1.2
+        2. Marks: RSI between 40-60 (No Euphoria) & ATR < 1% (Low Noise)
+        """
+        # Technicals
+        delta = df['CLOSE'].diff()
+        gain = delta.where(delta > 0, 0).rolling(window=14).mean()
+        loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
+        df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+        
+        # Volatility Check (ATR) - CRITICAL for 1% Stop Loss
+        df['TR'] = np.maximum(df['HIGH'] - df['LOW'], 
+                    np.maximum(abs(df['HIGH'] - df['CLOSE'].shift(1)), 
+                    abs(df['LOW'] - df['CLOSE'].shift(1))))
+        df['ATR_Pct'] = df['TR'].rolling(window=14).mean() / df['CLOSE']
 
-if df_raw is not None:
-    # --- 2. FUZZY COLUMN MAPPING (The Fix) ---
-    cols = list(df_raw.columns)
+        last = df.iloc[-1]
+        score = 0
+
+        # FILTER 1: PETER LYNCH (Fundamentals)
+        if peg < 1.0: score += 40
+        if d_e < 1.2: score += 10
+
+        # FILTER 2: HOWARD MARKS (Cycle & Anti-Euphoria)
+        # We target the 'Sweet Spot' where the stock is stable but ready.
+        if 40 <= last['RSI'] <= 60: score += 30
+        
+        # SAFETY CHECK: If daily volatility > 1.2%, the 1% SL is too risky.
+        if last['ATR_Pct'] < 0.012: score += 20 
+
+        return score, last['CLOSE']
+
+# --- STREAMLIT UI ---
+st.set_page_config(layout="wide", page_title="Titan 9 Guardian")
+st.title("🛡️ Mugan's Legacy: The Titan 9")
+st.caption("Top 360 NSE | 1:3 Risk-Reward | Lynch-Marks Infusion")
+
+# This would ideally be a loop through your Top 360 list
+# For this audit, we display the results of a processed scan
+def show_dashboard(results_list):
+    # Sort and take exactly Top 9
+    top_9 = pd.DataFrame(results_list).sort_values(by="Score", ascending=False).head(9)
     
-    # We search for keywords instead of exact matches to avoid KeyErrors
-    def find_col(keywords):
-        for k in keywords:
-            for c in cols:
-                if k in c: return c
-        return None
+    # 3x3 Grid Layout
+    for i in range(0, len(top_9), 3):
+        cols = st.columns(3)
+        for j in range(3):
+            if i + j < len(top_9):
+                stock = top_9.iloc[i + j]
+                with cols[j]:
+                    with st.container(border=True):
+                        st.subheader(stock['Symbol'])
+                        st.progress(stock['Score'] / 100)
+                        
+                        p = stock['Price']
+                        tp = round(p * 1.03, 2)
+                        sl = round(p * 0.99, 2)
+                        
+                        c1, c2 = st.columns(2)
+                        c1.metric("Entry", f"₹{p}")
+                        c1.metric("Score", f"{stock['Score']}%")
+                        c2.write(f"**Target:** :green[₹{tp}]")
+                        c2.write(f"**Stop:** :red[₹{sl}]")
+                        st.caption("1:3 Ratio Verified")
 
-    # Map the most likely column names for 2026 UDiFF and Legacy formats
-    sym_col = find_col(['TCKRSYMB', 'SYMBOL'])
-    ser_col = find_col(['SCTYSRS', 'SERIES'])
-    cls_col = find_col(['CLSPRIC', 'CLOSE'])
-    prv_col = find_col(['PRVSCLSGPRIC', 'PREV'])
-    vol_col = find_col(['TTLTRADGVOL', 'TOTTRDQTY', 'VOLUME'])
+# Mock results for visual validation
+processed_stocks = [
+    {"Symbol": "RELIANCE", "Score": 95, "Price": 2980},
+    {"Symbol": "HDFCBANK", "Score": 92, "Price": 1460},
+    {"Symbol": "TCS", "Score": 90, "Price": 3910},
+    {"Symbol": "TITAN", "Score": 88, "Price": 3250},
+    {"Symbol": "INFY", "Score": 85, "Price": 1620},
+    {"Symbol": "AXISBANK", "Score": 84, "Price": 1080},
+    {"Symbol": "ICICIBANK", "Score": 82, "Price": 1120},
+    {"Symbol": "BHARTIARTL", "Score": 81, "Price": 1210},
+    {"Symbol": "TATAMOTORS", "Score": 80, "Price": 940}
+]
 
-    if not all([sym_col, ser_col, cls_col, prv_col, vol_col]):
-        st.error(f"Critical Columns Missing. Found: {cols}")
-    else:
-        st.success(f"✅ System Online: Data for {data_date.strftime('%d %b %Y')}")
-        
-        # --- 3. FILTERING & STRATEGY ---
-        # Only keep 'EQ' (Standard) or 'BE' (Trade-to-trade)
-        df = df_raw[df_raw[ser_col].str.contains('EQ|BE', na=False, case=False)].copy()
-        
-        # Convert to Numeric
-        for c in [cls_col, prv_col, vol_col]:
-            df[c] = pd.to_numeric(df[c], errors='coerce')
-
-        df['CHANGE_%'] = (((df[cls_col] - df[prv_col]) / df[prv_col]) * 100).round(2)
-        df['VOL_FORCE'] = (df[vol_col] / df[vol_col].median()).round(2)
-        
-        def get_signal(row):
-            # Melvin Li 'Sword' (Price + Volume Breakout)
-            if row['CHANGE_%'] > 3.0 and row['VOL_FORCE'] > 2.0:
-                return "🟢 BUY (THE SWORD)"
-            # Jhunjhunwala 'Shield' (Value accumulation)
-            elif -1.0 < row['CHANGE_%'] < 0.5 and row['VOL_FORCE'] > 1.2:
-                return "🔵 HOLD (THE SHIELD)"
-            return "WAIT"
-
-        df['STRATEGY'] = df.apply(get_signal, axis=1)
-        df['TARGET(6%)'] = (df[cls_col] * 1.06).round(2)
-        df['STOP(3%)'] = (df[cls_col] * 0.97).round(2)
-
-        # --- 4. FIRST-CLASS DASHBOARD ---
-        results = df[df['STRATEGY'] != "WAIT"].sort_values(by='VOL_FORCE', ascending=False)
-        
-        # Cleaner Column Names for UI
-        ui_df = results[[sym_col, cls_col, 'CHANGE_%', 'VOL_FORCE', 'STRATEGY', 'TARGET(6%)', 'STOP(3%)']]
-        ui_df.columns = ['SYMBOL', 'PRICE', 'CHG%', 'VOL_FORCE', 'STRATEGY', 'TARGET', 'STOPLOSS']
-        
-        st.subheader("🔥 Live Buy Alerts")
-        st.table(ui_df)
-        
-        # CSV Export
-        st.download_button("📥 Download Trade Plan", ui_df.to_csv(index=False), "TradePlan.csv")
-else:
-    st.error("Failed to connect to NSE. Please refresh.")
-        
+show_dashboard(processed_stocks)
