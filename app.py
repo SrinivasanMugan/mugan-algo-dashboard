@@ -4,37 +4,44 @@ import pandas_ta as ta
 import plotly.graph_objects as go
 from datetime import date, timedelta
 from jugaad_data.nse import stock_df
+import requests
+from io import StringIO
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Minervini Pro - NSE India", layout="wide")
-st.title("🎯 Minervini SEPA & VCP Pro Dashboard")
-st.markdown("### Powered by `jugaad-data` for the Indian Market")
+st.set_page_config(page_title="Minervini NSE Full Scanner", layout="wide")
+st.title("🇮🇳 Minervini SEPA: The Nifty 500 Basket")
 
-# Add your core watchlist here
-TICKERS = ["RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY", "BHARTIARTL", "SBIN", "HAL", "TATASTEEL"]
+# --- STEP 1: AUTOMATED BASKET RETRIEVAL ---
+@st.cache_data(ttl=86400) # Refreshes the list once a day
+def get_nifty_500():
+    url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    response = requests.get(url, headers=headers)
+    df_indices = pd.read_csv(StringIO(response.text))
+    return df_indices['Symbol'].tolist()
 
-def get_minervini_pro(ticker):
+def process_stock(ticker):
     try:
-        # Fetching data (400 days to cover 200 SMA and 52W High/Low)
+        # Fetching 400 days for 200 SMA & 52W High/Low
         end_date = date.today()
-        start_date = end_date - timedelta(days=400) 
+        start_date = end_date - timedelta(days=400)
         df = stock_df(symbol=ticker, from_date=start_date, to_date=end_date, series="EQ")
         
-        # Sort and Clean
+        if df.empty: return None
+        
         df = df.sort_values('DATE').reset_index(drop=True)
         df.rename(columns={'CLOSE': 'Close', 'HIGH': 'High', 'LOW': 'Low', 'OPEN': 'Open', 'VOLUME': 'Volume'}, inplace=True)
         
-        # 1. TECHNICAL INDICATORS
+        # Technicals
         df['SMA_50'] = ta.sma(df['Close'], length=50)
         df['SMA_150'] = ta.sma(df['Close'], length=150)
         df['SMA_200'] = ta.sma(df['Close'], length=200)
-        df['Vol_Avg'] = ta.sma(df['Volume'], length=50)
         
-        # 2. TREND TEMPLATE LOGIC
         curr = df['Close'].iloc[-1]
         low_52 = df['Low'].tail(252).min()
         high_52 = df['High'].tail(252).max()
         
+        # Minervini 7-Point Template
         c1 = curr > df['SMA_150'].iloc[-1] and curr > df['SMA_200'].iloc[-1]
         c2 = df['SMA_150'].iloc[-1] > df['SMA_200'].iloc[-1]
         c3 = df['SMA_200'].iloc[-1] > df['SMA_200'].iloc[-20]
@@ -43,65 +50,50 @@ def get_minervini_pro(ticker):
         c6 = curr > (low_52 * 1.30)
         c7 = curr > (high_52 * 0.75)
         
-        trend_score = sum([c1, c2, c3, c4, c5, c6, c7])
+        score = sum([c1, c2, c3, c4, c5, c6, c7])
         
-        # 3. VCP & BREAKOUT LOGIC (THE "JUGAAD" EXTRAS)
-        # Check if Volatility is Contracting (Last 5 days range < Avg Range of last 20 days)
+        # VCP Tightness (Volatility contraction)
         df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
-        current_atr = df['ATR'].iloc[-1]
-        avg_atr = df['ATR'].tail(20).mean()
-        is_tight = "YES" if current_atr < (avg_atr * 0.8) else "No"
+        is_tight = "YES" if df['ATR'].iloc[-1] < (df['ATR'].tail(20).mean() * 0.80) else "No"
         
-        # Check for Volume Spike (Today's Volume > 150% of 50-day average)
-        vol_spike = "🚀 SPIKE" if df['Volume'].iloc[-1] > (df['Vol_Avg'].iloc[-1] * 1.5) else "Normal"
-        
-        return {
-            "Ticker": ticker,
-            "Price": f"₹{curr:,.2f}",
-            "Trend": f"{trend_score}/7",
-            "VCP Tightness": is_tight,
-            "Vol Breakout": vol_spike,
-            "Gap to High": f"{((high_52 - curr)/high_52)*100:.1f}%",
-            "Data": df
-        }
+        if score >= 5: # Only show stocks that are starting to trend
+            return {
+                "Ticker": ticker,
+                "Price": round(curr, 2),
+                "Minervini Score": f"{score}/7",
+                "VCP Tight": is_tight,
+                "52W High Gap %": round(((high_52 - curr)/high_52)*100, 2),
+                "Data": df
+            }
     except:
         return None
 
-# --- UI DISPLAY ---
-results = []
-with st.spinner("Scanning NSE for Superperformers..."):
-    for t in TICKERS:
-        data = get_minervini_pro(t)
-        if data: results.append(data)
+# --- UI LOGIC ---
+all_symbols = get_nifty_500()
 
-if results:
-    df_res = pd.DataFrame(results).drop(columns=['Data'])
+# To prevent the app from crashing on Cloud, let's process in smaller batches
+# or let the user choose a sub-set
+st.sidebar.header("Scanner Settings")
+batch_size = st.sidebar.slider("Number of stocks to scan", 10, 500, 50)
+
+if st.button(f"Scan Top {batch_size} Nifty 500 Stocks"):
+    results = []
+    progress_bar = st.progress(0)
     
-    # Highlight Row if Trend is 7/7 and VCP is Tight
-    def highlight_picks(val):
-        color = 'background-color: #1e3d2f' if val == "7/7" else ''
-        return color
+    for i, ticker in enumerate(all_symbols[:batch_size]):
+        res = process_stock(ticker)
+        if res: results.append(res)
+        progress_bar.progress((i + 1) / batch_size)
+        
+    if results:
+        df_final = pd.DataFrame(results).drop(columns=['Data'])
+        st.write("### 📈 Found 'Stage 2' Leaders")
+        st.dataframe(df_final.sort_values(by="Minervini Score", ascending=False), use_container_width=True)
+        
+        # CSV Download for your records
+        csv = df_final.to_csv(index=False).encode('utf-8')
+        st.download_button("Download Scan Results", csv, "minervini_scan.csv", "text/csv")
+    else:
+        st.info("No stocks currently meeting the 5/7 score criteria in this batch.")
 
-    st.dataframe(df_res.style.applymap(highlight_picks, subset=['Trend']), use_container_width=True)
-
-    # Deep Dive Visualization
-    st.divider()
-    choice = st.selectbox("Inspect Chart for 'Cheat' Entry:", TICKERS)
-    s_data = next(x for x in results if x["Ticker"] == choice)['Data'].tail(100)
-    
-    fig = go.Figure(data=[go.Candlestick(x=s_data['DATE'], open=s_data['Open'], high=s_data['High'], low=s_data['Low'], close=s_data['Close'], name="Price")])
-    fig.add_trace(go.Scatter(x=s_data['DATE'], y=s_data['SMA_50'], name="50 SMA", line=dict(color='orange')))
-    fig.add_trace(go.Scatter(x=s_data['DATE'], y=s_data['SMA_200'], name="200 SMA", line=dict(color='red')))
-    
-    fig.update_layout(height=600, template="plotly_dark", title=f"{choice} - Look for Tight Price Action & Volume Spikes")
-    st.plotly_chart(fig, use_container_width=True)
-
-else:
-    st.warning("NSE Data fetch failed. Ensure you have an active internet connection.")
-
-st.sidebar.markdown("""
-### 📖 How to use:
-1. **Trend 7/7:** The stock is in a massive uptrend.
-2. **VCP Tightness = YES:** The price is 'coiling' like a spring. This is where you look for an entry.
-3. **Vol Breakout = SPIKE:** Institutions are buying. 
-""")
+st.info("Note: A Score of 7/7 means the stock is a 'True Market Leader'. Look for 'VCP Tight = YES' for the lowest-risk entry.")
