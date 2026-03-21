@@ -4,69 +4,57 @@ import requests
 import time
 from streamlit_autorefresh import st_autorefresh
 
-# 1. REFRESH: 2 Minutes is the safest for NSE
-st_autorefresh(interval=120 * 1000, key="nse_sync_safe")
+# 1. CLOUD OPTIMIZATION: 2-minute refresh to avoid IP bans
+st_autorefresh(interval=120 * 1000, key="titan_sync")
 
-class NSELiveSession:
+class TitanFullEngine:
     def __init__(self):
         self.session = requests.Session()
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive"
+            "Referer": "https://www.nseindia.com/"
         }
         self.session.headers.update(self.headers)
-        self.init_session()
+        # Visit home to get cookies
+        try: self.session.get("https://www.nseindia.com", timeout=10)
+        except: pass
 
-    def init_session(self):
-        """Must visit home page first to get cookies, or API will block you."""
-        try:
-            self.session.get("https://www.nseindia.com", timeout=10)
-        except:
-            st.error("NSE Connection Failed. Check your internet.")
-
-    def get_price(self, symbol):
-        """Fetches price using the active session cookies."""
+    def get_live_stats(self, symbol):
         url = f"https://www.nseindia.com/api/quote-equity?symbol={symbol}"
         try:
-            # Small delay to look human
-            time.sleep(1) 
-            response = self.session.get(url, timeout=10)
-            data = response.json()
-            return float(data['priceInfo']['lastPrice'])
-        except:
-            # If session expires, re-init and try once more
-            self.init_session()
-            return None
+            time.sleep(1) # Human-like delay
+            resp = self.session.get(url, timeout=10).json()
+            return {
+                "price": float(resp['priceInfo']['lastPrice']),
+                "pChange": float(resp['priceInfo']['pChange'])
+            }
+        except: return None
 
-# --- UI SETUP ---
-st.set_page_config(layout="wide", page_title="Titan 9 Guardian")
-st.title("🛡️ Titan 9: Live Indian Standard")
+# --- UI LAYER ---
+st.set_page_config(layout="wide", page_title="Titan 9 Full")
+st.title("🛡️ Titan 9: Full Strategy Engine")
 
-if 'nse' not in st.session_state:
-    st.session_state.nse = NSELiveSession()
+if 'engine' not in st.session_state:
+    st.session_state.engine = TitanFullEngine()
 
-# Your Top Picks
+# THE TOP 9 SELECTION (Based on Lynch/Marks Analysis)
 watch_list = ["RELIANCE", "TCS", "HDFCBANK", "INFY", "TITAN", "ICICIBANK", "AXISBANK", "BHARTIARTL", "LT"]
-
-st.write(f"Last Sync: {time.strftime('%H:%M:%S')}")
 
 cols = st.columns(3)
 for i, symbol in enumerate(watch_list):
-    price = st.session_state.nse.get_price(symbol)
-    
+    data = st.session_state.engine.get_live_stats(symbol)
     with cols[i % 3]:
         with st.container(border=True):
-            if price:
-                entry = price * 0.99 # Replace with your actual buy price
-                tp = round(entry * 1.03, 2)
-                sl = round(entry * 0.99, 2)
-                
-                st.metric(symbol, f"₹{price}")
-                st.write(f"**Target:** :green[₹{tp}] | **Stop:** :red[₹{sl}]")
-                
-                if price >= tp: st.success("🎯 TARGET HIT")
-                if price <= sl: st.error("🚨 STOP HIT")
+            if data:
+                p = data['price']
+                tp = round(p * 1.03, 2)
+                sl = round(p * 0.99, 2)
+                st.metric(symbol, f"₹{p}", f"{data['pChange']}%")
+                st.write(f"**Target (3%):** :green[₹{tp}]")
+                st.write(f"**Stop (1%):** :red[₹{sl}]")
+                # Compounding Logic Note
+                st.caption(f"Goal: Roll into next trade after ₹{tp}")
             else:
-                st.warning(f"{symbol}: Retrying...")
+                st.warning(f"{symbol}: Connection Refused")
+                st.caption("NSE is rate-limiting the cloud server. Stand by...")
