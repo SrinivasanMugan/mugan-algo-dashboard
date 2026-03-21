@@ -97,3 +97,35 @@ if st.button(f"Scan Top {batch_size} Nifty 500 Stocks"):
         st.info("No stocks currently meeting the 5/7 score criteria in this batch.")
 
 st.info("Note: A Score of 7/7 means the stock is a 'True Market Leader'. Look for 'VCP Tight = YES' for the lowest-risk entry.")
+# --- NEW: RISK MANAGEMENT CALCULATOR ---
+def display_risk_calculator(ticker, price):
+    st.sidebar.markdown(f"### 🛡️ Risk Manager: {ticker}")
+    capital = st.sidebar.number_input("Trading Capital (₹)", value=100000, step=5000)
+    risk_per_trade = st.sidebar.slider("Risk per trade (%)", 0.5, 2.0, 1.0) / 100
+    
+    # Minervini's Standard: Max 7-8% Stop Loss
+    stop_loss_pct = 0.07 
+    stop_price = price * (1 - stop_loss_pct)
+    
+    # Target for 3:1 Ratio (Minervini Goal)
+    target_price = price * (1 + (stop_loss_pct * 3))
+    
+    # Position Sizing: How many shares to buy?
+    rupee_risk = capital * risk_per_trade
+    shares_to_buy = int(rupee_risk / (price - stop_price))
+    
+    st.sidebar.success(f"**Action Plan for {ticker}:**")
+    st.sidebar.write(f"🔹 **Buy At:** ₹{price:.2f}")
+    st.sidebar.write(f"🔹 **Stop Loss:** ₹{stop_price:.2f} (-7%)")
+    st.sidebar.write(f"🔹 **Target:** ₹{target_price:.2f} (+21%)")
+    st.sidebar.write(f"📏 **Buy Quantity:** {shares_to_buy} Shares")
+    st.sidebar.info(f"Total Investment: ₹{shares_to_buy * price:,.2f}")
+
+# --- UPDATE UI SECTION ---
+# Add this inside your 'if results:' block to link it to the selected stock
+if results:
+    # ... existing dataframe code ...
+    
+    # Link calculator to the selected deep-dive stock
+    selected_stock = next(x for x in results if x["Ticker"] == top_ticker)
+    display_risk_calculator(selected_stock['Ticker'], selected_stock['Price'])
