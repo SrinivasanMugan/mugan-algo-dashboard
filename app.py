@@ -8,11 +8,11 @@ import requests
 from io import StringIO
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Minervini NSE Full Scanner", layout="wide")
-st.title("🇮🇳 Minervini SEPA: The Nifty 500 Basket")
+st.set_page_config(page_title="Strict VCP NSE Scanner", layout="wide")
+st.title("🇮🇳 Minervini SEPA: Strict VCP Filter")
 
 # --- STEP 1: AUTOMATED BASKET RETRIEVAL ---
-@st.cache_data(ttl=86400) # Refreshes the list once a day
+@st.cache_data(ttl=86400)
 def get_nifty_500():
     url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -22,7 +22,6 @@ def get_nifty_500():
 
 def process_stock(ticker):
     try:
-        # Fetching 400 days for 200 SMA & 52W High/Low
         end_date = date.today()
         start_date = end_date - timedelta(days=400)
         df = stock_df(symbol=ticker, from_date=start_date, to_date=end_date, series="EQ")
@@ -32,7 +31,7 @@ def process_stock(ticker):
         df = df.sort_values('DATE').reset_index(drop=True)
         df.rename(columns={'CLOSE': 'Close', 'HIGH': 'High', 'LOW': 'Low', 'OPEN': 'Open', 'VOLUME': 'Volume'}, inplace=True)
         
-        # Technicals
+        # Technicals (SMAs)
         df['SMA_50'] = ta.sma(df['Close'], length=50)
         df['SMA_150'] = ta.sma(df['Close'], length=150)
         df['SMA_200'] = ta.sma(df['Close'], length=200)
@@ -52,31 +51,32 @@ def process_stock(ticker):
         
         score = sum([c1, c2, c3, c4, c5, c6, c7])
         
-        # VCP Tightness (Volatility contraction)
+        # VCP Tightness Logic
         df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
-        is_tight = "YES" if df['ATR'].iloc[-1] < (df['ATR'].tail(20).mean() * 0.80) else "No"
+        # Tightness Check (Current ATR < 85% of 20-day average)
+        is_tight = df['ATR'].iloc[-1] < (df['ATR'].tail(20).mean() * 0.85)
         
-        if score >= 5: # Only show stocks that are starting to trend
+        # --- CRITICAL CHANGE: ONLY RETURN IF SCORE >= 5 AND VCP IS YES ---
+        if score >= 5 and is_tight:
             return {
                 "Ticker": ticker,
                 "Price": round(curr, 2),
                 "Minervini Score": f"{score}/7",
-                "VCP Tight": is_tight,
+                "VCP Tight": "YES",
                 "52W High Gap %": round(((high_52 - curr)/high_52)*100, 2),
                 "Data": df
             }
+        return None # Discards stocks that are not "YES"
     except:
         return None
 
 # --- UI LOGIC ---
 all_symbols = get_nifty_500()
 
-# To prevent the app from crashing on Cloud, let's process in smaller batches
-# or let the user choose a sub-set
 st.sidebar.header("Scanner Settings")
-batch_size = st.sidebar.slider("Number of stocks to scan", 10, 500, 50)
+batch_size = st.sidebar.slider("Number of stocks to scan", 10, 500, 100)
 
-if st.button(f"Scan Top {batch_size} Nifty 500 Stocks"):
+if st.button(f"Scan for Stage 2 VCP Leaders"):
     results = []
     progress_bar = st.progress(0)
     
@@ -87,14 +87,12 @@ if st.button(f"Scan Top {batch_size} Nifty 500 Stocks"):
         
     if results:
         df_final = pd.DataFrame(results).drop(columns=['Data'])
-        st.write("### 📈 Found 'Stage 2' Leaders")
+        st.write(f"### 🎯 Found {len(df_final)} Strict VCP Leaders")
         st.dataframe(df_final.sort_values(by="Minervini Score", ascending=False), use_container_width=True)
         
-        # CSV Download for your records
         csv = df_final.to_csv(index=False).encode('utf-8')
-        st.download_button("Download Scan Results", csv, "minervini_scan.csv", "text/csv")
+        st.download_button("Download Results", csv, "vcp_leaders.csv", "text/csv")
     else:
-        st.info("No stocks currently meeting the 5/7 score criteria in this batch.")
+        st.warning("No stocks currently meet the Strict VCP criteria. Market volatility may be too high today.")
 
-st.info("Note: A Score of 7/7 means the stock is a 'True Market Leader'. Look for 'VCP Tight = YES' for the lowest-risk entry.")
-
+st.info("The dashboard is now set to **'Strict Mode'**. It will hide any stock that does not show Volatility Contraction (VCP YES).")
