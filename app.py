@@ -1,69 +1,49 @@
+import streamlit as st
 from jugaad_data.nse import NSELive
 import pandas as pd
 import time
 
-def hunt_underdogs(symbol_list):
+# Create a cached function to prevent constant NSE hits (which leads to IP bans)
+@st.cache_data(ttl=60) # Refreshes every 1 minute
+def fetch_underdog_data(symbol_list):
     n = NSELive()
-    underdog_results = []
-    
-    print(f"--- Mining started for {len(symbol_list)} private candidates ---")
+    data_rows = []
     
     for symbol in symbol_list:
         try:
-            # 1. LIVE DATA CAPTURE
+            # Adding a small sleep to avoid rapid-fire requests on cloud
+            time.sleep(0.6) 
             quote = n.stock_quote(symbol)
-            price_info = quote['priceInfo']
-            curr_price = price_info['lastPrice']
-            mkt_cap = quote['securityWiseDP']['marketCapitalization'] # In Crores
             
-            # 2. FUNDAMENTAL MINING (Note: jugaad-data provides quote; 
-            # for full automated financials, one usually pairs with a local CSV 
-            # or a supplemental scrapper. Here we use the Live Ratios provided by NSE)
+            # The "Deep Value" Extraction
+            price = quote['priceInfo']['lastPrice']
+            mkt_cap = quote['securityWiseDP']['marketCapitalization']
             
-            # Metadata for 'Private-Only' and 'No-Gov' verification
-            meta = quote['metadata']
-            industry = meta.get('industry', 'N/A')
-            
-            # --- THE GRAHAM CIGAR BUTT CALCULATION ---
-            # We look for stocks where the valuation is statistically broken
-            # Typical 'Underdog' P/B threshold for private Indian firms is < 0.7
-            pb_ratio = quote['metadata'].get('pdSymbolCustomValue', {}).get('priceToBook', 0) 
-            # Note: If PB isn't in live quote, we calculate from latest BS
-            
-            # --- THE SAFETY VAULT (No-Backfire Logic) ---
-            # 1. No Promoter Pledging
+            # Check for our 'No-Backfire' criteria
             pledge = quote['securityWiseDP'].get('promoterPledgedSharePercent', 0)
             
-            # 2. Delivery Percentage (Soros-like sentiment check)
-            # High delivery % in a flat stock indicates "Smart Money" is accumulating
-            delivery_pct = quote['securityWiseDP'].get('deliveryToTradedQuantity', 0)
-
-            # --- THE SELECTION TRIGGER ---
-            # A: Price-to-Book is extremely low (< 0.75)
-            # B: No debt-pledge risk (Pledge == 0)
-            # C: Market Cap is small enough for 'Unlimited Upside' (< 5000 Cr)
-            if pb_ratio < 0.75 and pledge == 0 and mcap < 5000:
-                underdog_results.append({
-                    "Symbol": symbol,
-                    "Industry": industry,
-                    "LTP": curr_price,
-                    "P/B Ratio": pb_ratio,
-                    "Delivery %": delivery_pct,
-                    "Mkt Cap (Cr)": round(mcap, 2),
-                    "Status": "STRONG UNDERDOG" if pb_ratio < 0.5 else "VALUATION GAP"
-                })
-                
-            # Respecting NSE's rate limits
-            time.sleep(0.5) 
-            
+            # Placeholder for PB Ratio (Needs to be mapped from metadata)
+            # In cloud, some metadata fields might be empty if the IP is throttled
+            data_rows.append({
+                "Symbol": symbol, 
+                "Price": price, 
+                "MCap (Cr)": mkt_cap,
+                "Pledge %": pledge
+            })
         except Exception as e:
+            st.sidebar.error(f"Error fetching {symbol}: {e}")
             continue
+    return pd.DataFrame(data_rows)
 
-    return pd.DataFrame(underdog_results)
+# Dashboard UI
+st.title("Mugan's Underdog Miner 2.0")
+watchlist = ["SOUTHBANK", "KARURVYSYA", "JINDALSAW", "FEDERALBNK"]
 
-# --- YOUR PRIVATE WATCHLIST (Targeting 'Boring' but Strong Sectors) ---
-watch_list = ["SOUTHBANK", "KARURVYSYA", "FEDERALBNK", "JINDALSAW", "TVSSRICHAK", "KPRMILL", "GUJGASLTD"]
-final_candidates = hunt_underdogs(watch_list)
-
-print("\n--- FINAL UNDERDOG MINING RESULTS (Real-Time) ---")
-print(final_candidates)
+if st.button('Mine Real-Time Underdogs'):
+    with st.spinner('Analyzing NSE Private Sector...'):
+        df = fetch_underdog_data(watchlist)
+        if not df.empty:
+            st.dataframe(df.style.highlight_max(axis=0))
+        else:
+            st.warning("No data retrieved. NSE might be throttling the cloud connection.")
+            
